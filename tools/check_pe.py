@@ -15,6 +15,24 @@
 import struct
 import sys
 
+
+def force_utf8_output():
+    """把 stdout/stderr 掰成 UTF-8。
+
+    Windows 上 Python 的 stdout 默认按系统代码页编码 —— CI 的英文镜像上是
+    cp1252，打中文直接 UnicodeEncodeError 崩掉，报的还是一条跟检查内容毫无
+    关系的编码错误（踩过）。GitHub Actions 的日志本来就按 UTF-8 解，
+    VS Code / Git Bash 终端也是 UTF-8，统一成 UTF-8 最省事。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass  # 3.7 以前没有 reconfigure，或者流不支持：那就随它去
+
+
+force_utf8_output()
+
 # 允许出现的依赖：Windows 自带。
 # 少了 libgcc_s / libwinpthread（MinGW 运行时）和 vcruntime140 / msvcp140
 # （MSVC 运行时）—— 那几个不是系统组件，缺了就得装运行库，"拷过去双击就能跑"
