@@ -1,0 +1,30 @@
+# 桌面时钟 —— Rust 版（对应根目录的 C 版，功能 1:1）
+[package]
+name = "clock_display"
+version = "1.0.0"
+edition = "2021"
+build = "build.rs"
+
+[[bin]]
+name = "clock_display"
+path = "src/main.rs"
+
+[dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",           # DIB、显示器信息、LOGPIXELSX
+    "Win32_Graphics_GdiPlus",       # GdipXxx 扁平 API（抗锯齿文字）
+    "Win32_UI_WindowsAndMessaging", # 窗口、消息、菜单、UpdateLayeredWindow
+    "Win32_UI_Controls_Dialogs",    # ChooseColorW：自定义颜色对话框
+    "Win32_UI_Input_KeyboardAndMouse", # VK_ESCAPE、SetCapture / GetCapture
+    "Win32_System_LibraryLoader",   # GetModuleFileNameW：定位 exe 同目录的 clock.ini
+    "Win32_System_SystemInformation", # GetLocalTime
+    "Win32_System_WindowsProgramming", # clock.ini 读写（Get/WritePrivateProfileStringW）
+    "Win32_Storage_FileSystem",     # DeleteFileW
+] }
+
+[build-dependencies]
+embed-resource = "3" # 把清单（comctl32 v6 + DPI 感知）、图标、版本信息编进 exe
+
+[profile.release]
+opt-level = 2

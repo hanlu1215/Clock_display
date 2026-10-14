@@ -3,6 +3,9 @@ build/
 build-*/
 cmake-build-*/
 
+# Rust 版（rust/）的构建目录
+rust/target/
+
 # 运行时生成的存档（位置、颜色、字号都存在这儿）
 clock.ini
 
@@ -10,3 +13,4 @@ clock.ini
 .vscode/
 .idea/
 *.swp
+CLAUDE.md

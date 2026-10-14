@@ -1,0 +1,5 @@
+# CRT 静态链接：MSVC 工具链默认动态依赖 vcruntime140.dll，没装 VC++ 运行库的
+# 机器上起不来。静态链进去之后，剩下的依赖只有 kernel32 / user32 / gdiplus 这些
+# Windows 自带的 DLL —— 守住「拷到别的电脑双击就能跑」这条底线（同 C 版的 -static）。
+[build]
+rustflags = ["-C", "target-feature=+crt-static"]

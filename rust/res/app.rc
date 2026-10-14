@@ -1,0 +1,37 @@
+// Rust 版的资源脚本，内容对应 C 版 res/app.rc.in。
+// 清单和图标直接复用 C 版 res/ 目录里的文件（路径相对本 .rc，正斜杠两边都认）。
+// 版本信息里的字符串一律保持 ASCII：rc 脚本编码在不同工具链下不一致，塞中文容易乱码。
+
+#define IDI_APPICON 1
+IDI_APPICON ICON "../../res/clock.ico"
+
+// 应用清单：comctl32 v6（右键菜单是现代样式）+ 系统 DPI 感知
+1 24 "../../res/app.manifest"
+
+1 VERSIONINFO
+FILEVERSION     1,0,0,0
+PRODUCTVERSION  1,0,0,0
+FILEFLAGSMASK   0x3fL
+FILEFLAGS       0x0L
+FILEOS          0x40004L
+FILETYPE        0x1L
+FILESUBTYPE     0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "Clock Display\0"
+            VALUE "FileDescription",  "Clock Display\0"
+            VALUE "FileVersion",      "1.0.0.0\0"
+            VALUE "InternalName",     "clock_display\0"
+            VALUE "OriginalFilename", "clock_display.exe\0"
+            VALUE "ProductName",      "Clock Display\0"
+            VALUE "ProductVersion",   "1.0.0.0\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 0x04B0
+    END
+END
