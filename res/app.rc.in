@@ -1,0 +1,41 @@
+// 由 CMake 从 app.rc.in 生成（见顶层 CMakeLists.txt 的 configure_file），
+// @XXX@ 会被替换成绝对路径。别去改生成出来的那个 app.rc。
+//
+// 版本信息里的字符串一律保持 ASCII：rc 脚本的编码在不同工具链下不一致，
+// 塞中文进去容易变乱码。
+
+#define IDI_APPICON 1
+
+// exe 图标就是 res/clock.ico（没有这个文件时这行会变成一句注释）
+@APP_ICON_LINE@
+
+// 应用清单：comctl32 v6（右键菜单是现代样式）+ 系统 DPI 感知
+1 24 "@APP_MANIFEST_RC@"
+
+1 VERSIONINFO
+FILEVERSION     1,0,0,0
+PRODUCTVERSION  1,0,0,0
+FILEFLAGSMASK   0x3fL
+FILEFLAGS       0x0L
+FILEOS          0x40004L
+FILETYPE        0x1L
+FILESUBTYPE     0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "Clock Display\0"
+            VALUE "FileDescription",  "Clock Display\0"
+            VALUE "FileVersion",      "1.0.0.0\0"
+            VALUE "InternalName",     "clock_display\0"
+            VALUE "OriginalFilename", "clock_display.exe\0"
+            VALUE "ProductName",      "Clock Display\0"
+            VALUE "ProductVersion",   "1.0.0.0\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 0x04B0
+    END
+END

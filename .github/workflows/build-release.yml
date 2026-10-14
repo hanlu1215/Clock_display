@@ -1,0 +1,126 @@
+name: 构建并发布 Windows 版
+
+# 只有手动触发：仓库页 → Actions → 左边选「构建并发布 Windows 版」→ Run workflow。
+# 故意不挂 push —— 每次提交都出包没必要，等要发版了再点一下。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 发布用的 tag（已存在就更新那个 release）
+        required: true
+        default: v1.0.0
+      prerelease:
+        description: 标成预发布
+        type: boolean
+        default: false
+      draft:
+        description: 存成草稿（先不公开）
+        type: boolean
+        default: false
+
+# 建 release 要写仓库内容的权限；不显式给的话，新仓库默认的 GITHUB_TOKEN 往往是只读
+permissions:
+  contents: write
+
+# 同一个 tag 不并发跑：两个 run 同时改同一个 release 会互相打架。
+# 后点的排队等着，不取消前面那个（半路取消容易留下半个包）。
+concurrency:
+  group: build-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Windows x64（MSYS2 UCRT64）
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    # 所有 run 都丢进 MSYS2 的 bash 里跑：本地就是这套工具链，CI 跟着走，
+    # 编出来的 exe 和本机那份一模一样（换了工具链就未必了）。
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: 取代码
+        uses: actions/checkout@v4
+
+      - name: 装工具链
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          # 先滚一遍仓库再装：runner 镜像里的 MSYS2 包数据库可能已经过期，
+          # 直接装会 404（MSYS2 是滚动仓库，旧版本包会被清掉）。
+          # 第一次跑会多花两三分钟，之后 runner 上有缓存就快了。
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            zip
+
+      - name: 构建
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+      - name: 自检
+        run: |
+          EXE=build/bin/clock_display.exe
+          test -f "$EXE" || { echo "::error::没有生成 exe"; exit 1; }
+
+          # 1) 必须是窗口子系统 —— 否则双击会先弹一个命令提示符窗口，
+          #    这正是当初要避免的事，值得在 CI 里卡一道。
+          objdump -p "$EXE" | grep -q "Windows GUI" \
+            || { echo "::error::exe 不是窗口子系统，双击会弹控制台"; exit 1; }
+
+          # 2) 不能依赖 MinGW 运行时（libgcc / libwinpthread 之类）——
+          #    只有系统自带的 DLL 才算过，这样拷到别的电脑上才能直接跑。
+          ALLOW='^(kernel32|user32|gdi32|gdiplus|comdlg32|shell32|advapi32|ole32|oleaut32|uuid|api-ms-win-crt-.*|ucrtbase|msvcrt|ntdll)\.dll$'
+          BAD=$(objdump -p "$EXE" | sed -n 's/.*DLL Name: //p' | tr 'A-Z' 'a-z' | grep -vE "$ALLOW" || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::多了非系统依赖，拷到别的机器上可能起不来："
+            echo "$BAD"
+            exit 1
+          fi
+
+          objdump -p "$EXE" | sed -n 's/.*DLL Name: /  依赖: /p'
+          echo "自检通过：窗口子系统 + 依赖全是 Windows 自带的 DLL"
+
+      - name: 打包
+        env:
+          # 从 env 转一手，别把 tag 直接拼进脚本里（万一名字里有引号之类的字符）
+          TAG: ${{ inputs.tag }}
+        run: |
+          NAME="clock_display-${TAG//\//-}-win64"
+          rm -rf pkg && mkdir -p pkg
+          cp build/bin/clock_display.exe pkg/
+          cp README.md pkg/
+          (cd pkg && zip -r "../${NAME}.zip" clock_display.exe README.md)
+          rm -rf pkg
+          ls -l "${NAME}.zip"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: clock_display-win64
+          path: '*.zip'
+          if-no-files-found: error
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: 桌面时钟 ${{ inputs.tag }}
+          body: |
+            Windows 64 位免安装版：解压后双击 `clock_display.exe` 就能用。
+
+            - 屏幕上只有一行时间，背景全透明，不占任务栏
+            - 左键拖动移动（只有文字本身点得中，透明处鼠标会穿过去）
+            - 滚轮调字号；右键菜单：颜色 / 字号 / 描边 / 置顶 / 关闭
+            - 依赖只有 Windows 自带的 DLL，不需要装 MSYS2 或任何运行库
+
+            设置自动存在 exe 同目录的 `clock.ini` 里。
+          files: '*.zip'
+          fail_on_unmatched_files: true
+          prerelease: ${{ inputs.prerelease }}
+          draft: ${{ inputs.draft }}
