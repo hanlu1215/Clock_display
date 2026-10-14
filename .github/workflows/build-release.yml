@@ -1,4 +1,4 @@
-name: 构建并发布 Windows 版
+name: 构建并发布 Windows 版（C）
 
 # 只有手动触发：仓库页 → Actions → 左边选「构建并发布 Windows 版」→ Run workflow。
 # 故意不挂 push —— 每次提交都出包没必要，等要发版了再点一下。
@@ -25,7 +25,7 @@ permissions:
 # 同一个 tag 不并发跑：两个 run 同时改同一个 release 会互相打架。
 # 后点的排队等着，不取消前面那个（半路取消容易留下半个包）。
 concurrency:
-  group: build-release-${{ inputs.tag }}
+  group: build-release-c-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -91,7 +91,9 @@ jobs:
           # 从 env 转一手，别把 tag 直接拼进脚本里（万一名字里有引号之类的字符）
           TAG: ${{ inputs.tag }}
         run: |
-          NAME="clock_display-${TAG//\//-}-win64"
+          # 包名里带个 c：Rust 版那个包叫 clock_display-rust-*，两个 exe 同名，
+          # 包名是唯一能一眼看出「这是哪个版本」的地方
+          NAME="clock_display-c-${TAG//\//-}-win64"
           rm -rf pkg && mkdir -p pkg
           cp build/bin/clock_display.exe pkg/
           cp README.md pkg/
@@ -112,7 +114,8 @@ jobs:
           tag_name: ${{ inputs.tag }}
           name: 桌面时钟 ${{ inputs.tag }}
           body: |
-            Windows 64 位免安装版：解压后双击 `clock_display.exe` 就能用。
+            Windows 64 位免安装版（**C 版**，和 Rust 版功能 1:1）：解压后双击
+            `clock_display.exe` 就能用。
 
             - 屏幕上只有一行时间，背景全透明，不占任务栏
             - 左键拖动移动（只有文字本身点得中，透明处鼠标会穿过去）

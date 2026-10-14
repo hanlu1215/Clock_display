@@ -1,0 +1,110 @@
+name: 构建并发布 Windows 版（Rust）
+
+# 和 C 版那个 workflow 完全独立，各点各的、各发各的 release。
+# 手动触发：仓库页 → Actions → 左边选「构建并发布 Windows 版（Rust）」→ Run workflow。
+# 同样不挂 push。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 发布用的 tag（已存在就更新那个 release）
+        required: true
+        # 加 rust- 前缀，和 C 版的 v1.0.0 分开：两个 exe 同名，
+        # 挤在同一个 release 里说明文字会互相覆盖
+        default: rust-v1.0.0
+      prerelease:
+        description: 标成预发布
+        type: boolean
+        default: false
+      draft:
+        description: 存成草稿（先不公开）
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-release-rust-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Windows x64（Rust / MSVC）
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 取代码
+        uses: actions/checkout@v4
+
+      - name: 装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      # 这一步必须站在 rust/ 目录里跑，不能图省事从仓库根用 --manifest-path。
+      # cargo 是从「当前目录」往上找 .cargo/config.toml 的，从根上跑就看不见
+      # rust/.cargo/config.toml —— 那里面的 -C target-feature=+crt-static 是
+      # 「拷到别的电脑双击就能跑」这条底线的全部依靠。实测过：少了这一步，
+      # 构建照样成功，但 exe 会依赖 VCRUNTIME140.dll，装不上 VC++ 运行库的
+      # 机器上直接起不来（下面那道自检会当场抓住它）。
+      - name: 构建
+        working-directory: rust
+        run: cargo build --release --locked
+
+      - name: 自检
+        # tools/check_pe.py 只读 PE 头，只用标准库 —— runner 上现成的 python 就够，
+        # 不用为了看一眼依赖再拉一套 MSYS2 进来（C 版那边有 objdump 是因为
+        # 它本来就要用 MSYS2 编译）。
+        run: |
+          python tools/check_pe.py rust/target/release/clock_display.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: 打包
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          # tag 默认带 rust- 前缀，但用户也可能填个不带前缀的版本号。
+          # 先把前缀剥掉再自己加，保证包名永远只出现一个 rust：
+          # 两个 exe 同名，包名是唯一能一眼看出「这是哪个版本」的地方。
+          $ver = $env:TAG -replace '/','-'
+          if ($ver -like 'rust-*') { $ver = $ver.Substring(5) }
+          $name = "clock_display-rust-$ver-win64"
+          New-Item -ItemType Directory -Force pkg | Out-Null
+          Copy-Item rust/target/release/clock_display.exe pkg/
+          Copy-Item README.md pkg/
+          Compress-Archive -Path pkg/clock_display.exe, pkg/README.md -DestinationPath "$name.zip" -Force
+          Remove-Item -Recurse -Force pkg
+          Get-Item "$name.zip" | Select-Object Name, Length
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: clock_display-rust-win64
+          path: '*.zip'
+          if-no-files-found: error
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: 桌面时钟 ${{ inputs.tag }}
+          body: |
+            Windows 64 位免安装版（**Rust 版**，和 C 版功能 1:1）：解压后双击
+            `clock_display.exe` 就能用。
+
+            - 屏幕上只有一行时间，背景全透明，不占任务栏
+            - 左键拖动移动（只有文字本身点得中，透明处鼠标会穿过去）
+            - 滚轮调字号；右键菜单：颜色 / 字号 / 描边 / 置顶 / 关闭
+            - 依赖只有 Windows 自带的 DLL：MSVC 运行库已经用 `+crt-static`
+              静态链进去了，不需要装 VC++ 运行库，也不需要装 Rust
+
+            设置自动存在 exe 同目录的 `clock.ini` 里（格式和 C 版一致，可以互换）。
+          files: '*.zip'
+          fail_on_unmatched_files: true
+          prerelease: ${{ inputs.prerelease }}
+          draft: ${{ inputs.draft }}

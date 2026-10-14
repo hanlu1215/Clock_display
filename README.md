@@ -6,6 +6,10 @@
 **Consolas 粗体、纯白、背后一层黑色描边、24 小时制 `%H:%M:%S`**。
 区别只在于那只钟压在整屏黑底上，这只是把背景整个去掉，只剩文字浮在桌面上。
 
+> 这份 README 讲的是**仓库根目录的 C 版**（Win32 + GDI+，纯 C）。
+> Rust 版在 [rust/](rust/) 目录，功能 1:1 移植，用法和设置文件都一样，
+> 见 [rust/README.md](rust/README.md)。两版各有独立的构建和发版 workflow。
+
 ## 操作
 
 | 操作 | 效果 |
@@ -61,30 +65,60 @@ MSYS2 或任何运行库。
 
 ## 发版（GitHub Actions）
 
-[.github/workflows/build-release.yml](.github/workflows/build-release.yml)
-**只在手动点击时跑**，不挂 `push` —— 平时提交什么都不做，要发版了再点一下。
+C 版和 Rust 版各一个 workflow，**互相独立、各点各的、各发各的 release**。
+两个都**只在手动点击时跑**，不挂 `push` —— 平时提交什么都不做，要发版了再点一下。
 
-仓库页 → **Actions** → 左边选「构建并发布 Windows 版」→ 右上 **Run workflow**，
-按需改几个参数：
+| | C 版 | Rust 版 |
+| --- | --- | --- |
+| workflow | [build-release.yml](.github/workflows/build-release.yml) | [build-release-rust.yml](.github/workflows/build-release-rust.yml) |
+| 名字 | 构建并发布 Windows 版（C） | 构建并发布 Windows 版（Rust） |
+| 工具链 | MSYS2 UCRT64 + CMake + Ninja | rustup / MSVC |
+| 产物 | `clock_display-c-<tag>-win64.zip` | `clock_display-rust-<tag>-win64.zip` |
+| 默认 tag | `v1.0.0` | `rust-v1.0.0` |
+
+仓库页 → **Actions** → 左边选一个 → 右上 **Run workflow**，参数两个 workflow 一样：
 
 | 参数 | 说明 |
 | --- | --- |
-| `tag` | 发布用的 tag，默认 `v1.0.0`；已存在就更新那个 release |
+| `tag` | 发布用的 tag，默认见上表；已存在就更新那个 release |
 | `prerelease` | 标成预发布 |
 | `draft` | 存成草稿，先不公开 |
 
-点下去之后它会：装 MSYS2 UCRT64 工具链 → `cmake` 构建 → **跑两道自检**
-（必须是窗口子系统、依赖必须全是 Windows 自带的 DLL）→ 打成
-`clock_display-<tag>-win64.zip`（exe + README）→ 上传成构建产物 →
+点下去之后它会：装工具链 → 构建 → **自检** → 打包（exe + README）→ 上传成构建产物 →
 创建 / 更新对应的 GitHub Release 并把 zip 挂上去。
 
-两道自检是专门守着这个项目的两条底线：**双击不弹控制台**、**拷到别的电脑能直接跑**。
-哪天有人不小心改了链接选项或加了依赖，CI 会当场红掉，而不是等发出去才发现。
+> 默认 tag 加了 `rust-` 前缀，是为了让两个 release 分开 —— 两个 exe 都叫
+> `clock_display.exe`，挤在同一个 release 里说明文字会互相覆盖。想合成一个
+> release 的话，把 Rust 那个的默认 tag 改成 `v1.0.0`，再把两边的 `body` 换掉、
+> 加上 `append_body: true` 就行。
 
-> 第一次跑会多花两三分钟滚一遍 MSYS2 仓库（runner 上的包数据库可能已经过期，
-> 直接装会 404）。另外建 release 需要写权限，workflow 里已经声明了
-> `permissions: contents: write`；如果仓库设置里把 Workflow permissions 卡成了
-> 只读，去 Settings → Actions → General 放开。
+### 那道自检是干嘛的
+
+两个 workflow 都会在打包前卡一道检查，守着这个项目的两条底线：
+
+1. **子系统必须是 Windows GUI** —— 否则双击会先弹一个命令提示符窗口
+2. **依赖的 DLL 必须全是 Windows 自带的** —— 否则拷到别的电脑上起不来
+
+C 版用 MSYS2 里现成的 `objdump`（它本来就要装 MSYS2 编译）；
+Rust 版用 [tools/check_pe.py](tools/check_pe.py) —— 只读 PE 头、只用标准库，
+runner 上现成的 python 就够，不用为了看一眼依赖再拉一整套 MSYS2 进来。
+本地也能跑：
+
+```bash
+python tools/check_pe.py rust/target/release/clock_display.exe
+python tools/check_pe.py build/bin/clock_display.exe
+```
+
+这道检查不是摆设，它真抓到过东西：Rust 版如果在仓库根上用
+`cargo build --manifest-path rust/Cargo.toml` 构建，cargo 就找不到
+`rust/.cargo/config.toml`，`+crt-static` 静默失效，**构建照样成功**，但 exe
+会依赖 `VCRUNTIME140.dll`。所以 Rust workflow 里那步构建特意站在 `rust/`
+目录里跑，`check_pe.py` 就是那个负责当场把它喊出来的。
+
+> 两个 workflow 第一次跑都要多花两三分钟（C 版要滚一遍 MSYS2 仓库；
+> Rust 版要编 `windows` crate）。另外建 release 需要写权限，workflow 里都
+> 声明了 `permissions: contents: write`；如果仓库设置里把 Workflow permissions
+> 卡成了只读，去 Settings → Actions → General 放开。
 
 ## 代码结构
 
@@ -105,8 +139,11 @@ res/
   clock.ico    exe 图标（7 个尺寸）
 tools/
   make_icon.py 重新生成 clock.ico（只用标准库）
+  check_pe.py  检查 exe 的子系统与 DLL 依赖（CI 自检用，也可本地跑）
+rust/          Rust 版（1:1 移植），见 rust/README.md
 .github/workflows/
-  build-release.yml  手动触发的构建 + 发版流水线
+  build-release.yml       手动触发的构建 + 发版（C 版）
+  build-release-rust.yml  手动触发的构建 + 发版（Rust 版）
 ```
 
 ### 几个值得说明的实现点
