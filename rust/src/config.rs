@@ -13,13 +13,26 @@
 /// 秒数 0→1→2 地跳，整串文字也不会左右晃 —— 隐私屏幕那只钟就是靠 Consolas
 /// 等宽做到的，这里沿用。后两个只是万一系统里一个等宽字体都没有时的兜底
 /// （Segoe UI / 微软雅黑的数字也是等宽数字，效果一样）。
-pub const FONT_CHOICES: [&str; 5] = [
+///
+/// 最后的 Comic Sans MS 是手写卡通风的「花活」，只在菜单里手动选，
+/// 自动探测永远轮不到它（排在 Segoe UI 后面）。注意它**不等宽**，
+/// 秒数跳动时整串字会重新居中、有点晃 —— 要的就是这个味儿。
+/// 新字体只能往列表末尾加：ini 里存的是下标，插中间会让老存档错位。
+pub const FONT_CHOICES: [&str; 6] = [
     "Consolas",          // 隐私屏幕那只钟用的就是它
     "Lucida Console",    // 等宽，老系统上也有
     "Courier New",       // 等宽，最后的等宽兜底
     "Microsoft YaHei UI",
     "Segoe UI",
+    "Comic Sans MS",     // 手写卡通风，Windows 自带
 ];
+
+/// 「字体」菜单里的特殊项：内置绘制的七段数码（电子表/LCD 风格）。
+/// 不是真字体 —— Windows 没有自带七段码字体，引用外部字体名没装就落空，
+/// 所以直接用 GDI+ 多边形画（见 render.rs 的 render_segments），零字体文件。
+/// 下标 = 真字体列表的长度，刚好接在菜单里所有真字体后面。
+pub const SEGMENT_FONT_INDEX: i32 = FONT_CHOICES.len() as i32;
+pub const SEGMENT_FONT_NAME: &str = "七段数码（内置）";
 
 /// ---- 字号档位 ----
 ///
@@ -57,6 +70,11 @@ pub const COLOR_CHOICES: [ColorChoice; 10] = [
 pub const DEFAULT_COLOR: u32 = 0xFFFFFFFF; // 白
 pub const DEFAULT_TOPMOST: bool = true;
 pub const DEFAULT_OUTLINE: bool = true;
+
+/// 字体下标的默认值：-1 = 自动（按 FONT_CHOICES 顺序挑第一个装了的，老行为）。
+/// 用户在右键菜单「字体」里选过之后就是具体的下标；选中的字体在别的机器上
+/// 不存在时会回落到自动。
+pub const DEFAULT_FONT_INDEX: i32 = -1;
 
 /// ---- 排版 ----
 ///

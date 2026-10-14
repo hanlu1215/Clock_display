@@ -12,16 +12,17 @@
 //! 想让墨迹落在哪儿，把左上角平移同样多就行 —— 位置完全可算，不受字体和字号影响。
 
 use std::ptr;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::GdiPlus::{
-    FontStyleBold, GdipCreateFont, GdipCreateFontFamilyFromName, GdipCreateSolidFill,
-    GdipCreateStringFormat, GdipDeleteBrush, GdipDeleteFont, GdipDeleteStringFormat,
-    GdipDrawString, GdipSetStringFormatAlign, GdipSetStringFormatLineAlign, GpBrush, GpFont,
-    GpFontFamily, GpGraphics, GpSolidFill, GpStringFormat, RectF, Status, StringAlignmentCenter,
-    StringFormatFlagsNoWrap, UnitPixel,
+    FillModeAlternate, FontStyleBold, GdipCreateFont, GdipCreateFontFamilyFromName,
+    GdipCreateSolidFill, GdipCreateStringFormat, GdipDeleteBrush, GdipDeleteFont,
+    GdipDeleteStringFormat, GdipDrawString, GdipFillPolygon, GdipSetStringFormatAlign,
+    GdipSetStringFormatLineAlign, GpBrush, GpFont, GpFontFamily, GpGraphics, GpSolidFill,
+    GpStringFormat, PointF, RectF, Status, StringAlignmentCenter, StringFormatFlagsNoWrap,
+    UnitPixel,
 };
 
 use crate::config::{FONT_CHOICES, INK_ALPHA_MIN};
@@ -37,45 +38,72 @@ fn gp_ok(status: Status) -> bool {
 /// 调用方拿它的一半来摆位：矩形左上角 = 想让文字中心在的位置 - 这个值的一半。
 pub const TEXT_RECT_SIZE: f32 = 4000.0;
 
-// 界面字体族（按 FONT_CHOICES 顺序挑第一个装了的），取到就一直缓存着用。
-// 这个 family 是「故意泄漏」的，别改成在退出时释放：
+// 界面字体族缓存（每个候选字体一格），取到就一直缓存着用。
+// 这些 family 是「故意泄漏」的，别改成在退出时释放：
 // 静态对象要等 main 返回之后才析构，那会儿 GdiplusShutdown 早跑过了，
 // 再去析构一个 GDI+ 对象必崩在 CRT 的退出处理里。
-// 存成 usize：0 表示「试过了，一个都没找到」。
-static FONT_FAMILY: OnceLock<usize> = OnceLock::new();
+// 存成 usize：0 = 还没试过，1 = 试过了这台机器没有，其他 = family 指针。
+static FAMILY_CACHE: [AtomicUsize; FONT_CHOICES.len()] =
+    [const { AtomicUsize::new(0) }; FONT_CHOICES.len()];
 
-pub fn family() -> Option<*mut GpFontFamily> {
-    let ptr = *FONT_FAMILY.get_or_init(|| {
-        for name in FONT_CHOICES {
-            let wide = to_wide(name);
-            let mut probe: *mut GpFontFamily = ptr::null_mut();
-            unsafe {
-                // 名字找不到时返回非 0 —— 正好拿来一个个试字体表里的候选。
-                if gp_ok(GdipCreateFontFamilyFromName(
-                    PCWSTR(wide.as_ptr()),
-                    ptr::null_mut(),
-                    &mut probe,
-                )) && !probe.is_null()
-                {
-                    return probe as usize; // 就它了，一直留着
-                }
-            }
-        }
-        0
-    });
-    if ptr == 0 {
-        None
-    } else {
-        Some(ptr as *mut GpFontFamily)
+/// 取第 index 个候选字体的 family，没有这台机器就返回 None。
+fn family_for(index: usize) -> Option<*mut GpFontFamily> {
+    let cached = FAMILY_CACHE[index].load(Ordering::Relaxed);
+    if cached != 0 {
+        return if cached == 1 {
+            None
+        } else {
+            Some(cached as *mut GpFontFamily)
+        };
     }
+
+    let wide = to_wide(FONT_CHOICES[index]);
+    let mut probe: *mut GpFontFamily = ptr::null_mut();
+    unsafe {
+        // 名字找不到时返回非 0 —— 正好拿来判断这台机器装没装。
+        if gp_ok(GdipCreateFontFamilyFromName(
+            PCWSTR(wide.as_ptr()),
+            ptr::null_mut(),
+            &mut probe,
+        )) && !probe.is_null()
+        {
+            FAMILY_CACHE[index].store(probe as usize, Ordering::Relaxed);
+            Some(probe)
+        } else {
+            FAMILY_CACHE[index].store(1, Ordering::Relaxed);
+            None
+        }
+    }
+}
+
+/// 解析出实际要用的字体：preferred 是用户在菜单里选的下标（-1 = 自动）。
+/// 指定的字体这台机器上没有时，回落到「从上往下挑第一个装了的」。
+/// 返回 (实际生效的下标, family)，给菜单打勾用。
+pub fn resolve_family(preferred: i32) -> Option<(usize, *mut GpFontFamily)> {
+    if preferred >= 0 && (preferred as usize) < FONT_CHOICES.len() {
+        if let Some(family) = family_for(preferred as usize) {
+            return Some((preferred as usize, family));
+        }
+    }
+    for index in 0..FONT_CHOICES.len() {
+        if let Some(family) = family_for(index) {
+            return Some((index, family));
+        }
+    }
+    None
+}
+
+/// 当前实际生效的字体下标（菜单「字体」里打勾用）。
+pub fn effective_font_index(preferred: i32) -> Option<usize> {
+    resolve_family(preferred).map(|(index, _)| index)
 }
 
 /// 按「像素」字号的粗体字（不是磅值），Drop 时自动 GdipDeleteFont。
 pub struct Font(*mut GpFont);
 
 impl Font {
-    pub fn create(pixel_size: f32) -> Option<Font> {
-        let family = family()?;
+    pub fn create(pixel_size: f32, font_index: i32) -> Option<Font> {
+        let (_, family) = resolve_family(font_index)?;
         if pixel_size <= 0.0 {
             return None;
         }
@@ -191,6 +219,260 @@ pub fn render_text(
         }
 
         let _ = GdipDeleteStringFormat(format);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ *  内置七段数码（电子表 / LCD 风格）
+ *
+ *  Windows 没有自带七段码字体，引用外部字体名（DS-Digital 之类）机器上没装就
+ *  落空，所以干脆自己画：每段是一个六边形（两端削尖，经典 LCD 的样子），
+ *  用 GdipFillPolygon 填 —— 和文字走同一块画布、同一条「画一次扫墨迹」的
+ *  排版管线，抗锯齿和描边（八方向重画）也是同一套。
+ *
+ *  字号口径和文字模式对齐：数码高度 ≈ font_px × 0.66，接近 Consolas 数字的
+ *  墨迹高度（约 0.63 em），同一档字号下两种模式看起来一般大。
+ * ------------------------------------------------------------------------ */
+
+/// 每个数字点亮哪几段：bit0=a（上横）… bit6=g（中横），经典七段编码。
+const SEGMENT_TABLE: [u8; 10] = [
+    0b0111111, // 0: a b c d e f
+    0b0000110, // 1: b c
+    0b1011011, // 2: a b g e d
+    0b1001111, // 3: a b c d g
+    0b1100110, // 4: f g b c
+    0b1101101, // 5: a f g c d
+    0b1111101, // 6: a f g e c d
+    0b0000111, // 7: a b c
+    0b1111111, // 8: 全亮
+    0b1101111, // 9: a b c d f g
+];
+
+const SEG_A: u8 = 1 << 0;
+const SEG_B: u8 = 1 << 1;
+const SEG_C: u8 = 1 << 2;
+const SEG_D: u8 = 1 << 3;
+const SEG_E: u8 = 1 << 4;
+const SEG_F: u8 = 1 << 5;
+const SEG_G: u8 = 1 << 6;
+
+/// 一段的水平/垂直六边形。横段给 (x, y, 长)，竖段同函数转置着用。
+unsafe fn fill_segment_h(
+    graphics: *mut GpGraphics,
+    brush: *mut GpBrush,
+    x: f32,
+    y: f32,
+    len: f32,
+    t: f32,
+) {
+    let half = t / 2.0;
+    let points = [
+        PointF { X: x + half, Y: y },
+        PointF { X: x + len - half, Y: y },
+        PointF { X: x + len, Y: y + half },
+        PointF { X: x + len - half, Y: y + t },
+        PointF { X: x + half, Y: y + t },
+        PointF { X: x, Y: y + half },
+    ];
+    let _ = GdipFillPolygon(graphics, brush, points.as_ptr(), 6, FillModeAlternate);
+}
+
+unsafe fn fill_segment_v(
+    graphics: *mut GpGraphics,
+    brush: *mut GpBrush,
+    x: f32,
+    y: f32,
+    len: f32,
+    t: f32,
+) {
+    let half = t / 2.0;
+    let points = [
+        PointF { X: x + half, Y: y },
+        PointF { X: x + t, Y: y + half },
+        PointF { X: x + t, Y: y + len - half },
+        PointF { X: x + half, Y: y + len },
+        PointF { X: x, Y: y + len - half },
+        PointF { X: x, Y: y + half },
+    ];
+    let _ = GdipFillPolygon(graphics, brush, points.as_ptr(), 6, FillModeAlternate);
+}
+
+unsafe fn draw_segment_digit(
+    graphics: *mut GpGraphics,
+    brush: *mut GpBrush,
+    digit: usize,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    t: f32,
+) {
+    let on = SEGMENT_TABLE[digit];
+    // 横段两端留出削尖的空隙，竖段插进横段之间的缝里
+    let hx = x + t * 0.6;
+    let hl = w - t * 1.2;
+    let vy1 = y + t * 0.6;
+    let vl = h / 2.0 - t * 1.1;
+    let vy2 = y + h / 2.0 + t * 0.5;
+
+    if on & SEG_A != 0 {
+        fill_segment_h(graphics, brush, hx, y, hl, t);
+    }
+    if on & SEG_G != 0 {
+        fill_segment_h(graphics, brush, hx, y + (h - t) / 2.0, hl, t);
+    }
+    if on & SEG_D != 0 {
+        fill_segment_h(graphics, brush, hx, y + h - t, hl, t);
+    }
+    if on & SEG_F != 0 {
+        fill_segment_v(graphics, brush, x, vy1, vl, t);
+    }
+    if on & SEG_B != 0 {
+        fill_segment_v(graphics, brush, x + w - t, vy1, vl, t);
+    }
+    if on & SEG_E != 0 {
+        fill_segment_v(graphics, brush, x, vy2, vl, t);
+    }
+    if on & SEG_C != 0 {
+        fill_segment_v(graphics, brush, x + w - t, vy2, vl, t);
+    }
+}
+
+/// 一格的步进宽度（数字 / 冒号共用几何参数，好让总宽度可算）。
+struct SegmentMetrics {
+    digit_w: f32,
+    colon_w: f32,
+    gap: f32,
+    h: f32,
+    t: f32,
+}
+
+fn segment_metrics(font_px: f32) -> SegmentMetrics {
+    let h = font_px * 0.66;
+    let t = h / 7.0;
+    SegmentMetrics {
+        digit_w: h * 0.52,
+        colon_w: t * 2.0,
+        gap: t * 1.2,
+        h,
+        t,
+    }
+}
+
+/// 整串（固定 "HH:MM:SS" 八字符）的像素宽度。
+fn segment_string_width(text: &[u16], m: &SegmentMetrics) -> f32 {
+    let mut width = 0.0f32;
+    let mut cells = 0;
+    for &c in text.iter().take_while(|&&c| c != 0) {
+        width += if c == b':' as u16 { m.colon_w } else { m.digit_w };
+        cells += 1;
+    }
+    if cells > 1 {
+        width += m.gap * (cells - 1) as f32;
+    }
+    width
+}
+
+/// 在 (x, y) 处把整串时间画出来（x 是串的左缘，y 是数码顶缘）。
+unsafe fn draw_segment_string(
+    graphics: *mut GpGraphics,
+    brush: *mut GpBrush,
+    text: &[u16],
+    x: f32,
+    y: f32,
+    m: &SegmentMetrics,
+) {
+    let mut cursor = x;
+    for &c in text.iter().take_while(|&&c| c != 0) {
+        if c == b':' as u16 {
+            // 冒号：上下两个方点，垂直方向摆在 1/3 和 2/3 处
+            let dots = [
+                PointF { X: cursor, Y: y + m.h * 0.28 },
+                PointF { X: cursor + m.t, Y: y + m.h * 0.28 },
+                PointF { X: cursor + m.t, Y: y + m.h * 0.28 + m.t },
+                PointF { X: cursor, Y: y + m.h * 0.28 + m.t },
+            ];
+            let _ = GdipFillPolygon(graphics, brush, dots.as_ptr(), 4, FillModeAlternate);
+            let dots = [
+                PointF { X: cursor, Y: y + m.h * 0.72 - m.t },
+                PointF { X: cursor + m.t, Y: y + m.h * 0.72 - m.t },
+                PointF { X: cursor + m.t, Y: y + m.h * 0.72 },
+                PointF { X: cursor, Y: y + m.h * 0.72 },
+            ];
+            let _ = GdipFillPolygon(graphics, brush, dots.as_ptr(), 4, FillModeAlternate);
+            cursor += m.colon_w + m.gap;
+        } else if (b'0' as u16..=b'9' as u16).contains(&c) {
+            draw_segment_digit(
+                graphics,
+                brush,
+                (c - b'0' as u16) as usize,
+                cursor,
+                y,
+                m.digit_w,
+                m.h,
+                m.t,
+            );
+            cursor += m.digit_w + m.gap;
+        } else {
+            cursor += m.digit_w + m.gap; // 不认识的字符留一空位，别把串挤歪
+        }
+    }
+}
+
+/// 七段数码版的 render_text：同样的排版矩形约定（TEXT_RECT_SIZE 见方、
+/// 串在矩形里居中），同样的八方向描边套路，于是排版管线（画一次扫墨迹、
+/// 矩形平移量 = 墨迹平移量）原样适用。
+pub fn render_segments(
+    graphics: *mut GpGraphics,
+    text: &[u16],
+    rect_x: f32,
+    rect_y: f32,
+    font_px: f32,
+    color: u32,
+    outline_color: u32,
+    outline: i32,
+) {
+    if graphics.is_null() || text.is_empty() || text[0] == 0 {
+        return;
+    }
+
+    let m = segment_metrics(font_px);
+    let width = segment_string_width(text, &m);
+    // 矩形尺寸固定，居中放串：起点 = 矩形左上角 + (矩形尺寸 - 串尺寸) / 2
+    let x = rect_x + (TEXT_RECT_SIZE - width) / 2.0;
+    let y = rect_y + (TEXT_RECT_SIZE - m.h) / 2.0;
+
+    unsafe {
+        if outline > 0 {
+            let mut edge: *mut GpSolidFill = ptr::null_mut();
+            if gp_ok(GdipCreateSolidFill(outline_color, &mut edge)) {
+                let mut dy = -outline;
+                while dy <= outline {
+                    let mut dx = -outline;
+                    while dx <= outline {
+                        if !(dx == 0 && dy == 0) {
+                            draw_segment_string(
+                                graphics,
+                                edge.cast::<GpBrush>(),
+                                text,
+                                x + dx as f32,
+                                y + dy as f32,
+                                &m,
+                            );
+                        }
+                        dx += outline;
+                    }
+                    dy += outline;
+                }
+                let _ = GdipDeleteBrush(edge.cast::<GpBrush>());
+            }
+        }
+
+        let mut fill: *mut GpSolidFill = ptr::null_mut();
+        if gp_ok(GdipCreateSolidFill(color, &mut fill)) {
+            draw_segment_string(graphics, fill.cast::<GpBrush>(), text, x, y, &m);
+            let _ = GdipDeleteBrush(fill.cast::<GpBrush>());
+        }
     }
 }
 

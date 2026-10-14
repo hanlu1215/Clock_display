@@ -12,16 +12,18 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::clock::Clock;
-use crate::config::{COLOR_CHOICES, SIZE_STEPS};
+use crate::config::{COLOR_CHOICES, FONT_CHOICES, SEGMENT_FONT_INDEX, SEGMENT_FONT_NAME, SIZE_STEPS};
+use crate::render;
 use crate::util::to_wide;
 
-// 菜单项 id：颜色和字号各占一段连续区间，按下标反查选项。
+// 菜单项 id：颜色 / 字号 / 字体各占一段连续区间，按下标反查选项。
 const MENU_COLOR_BASE: usize = 2000;
 const MENU_SIZE_BASE: usize = 2100;
 const MENU_COLOR_CUSTOM: usize = 2200;
 const MENU_OUTLINE: usize = 2201;
 const MENU_TOPMOST: usize = 2202;
 const MENU_QUIT: usize = 2203;
+const MENU_FONT_BASE: usize = 2300;
 
 // ChooseColorW 的「自定义颜色」格子：得跨次调用留着，所以放静态。
 // 不放的话每次打开颜色对话框，上次调好的颜色就没了。
@@ -77,6 +79,41 @@ fn build_size_menu(clock: &Clock) -> Option<HMENU> {
     }
 }
 
+fn build_font_menu(clock: &Clock) -> Option<HMENU> {
+    let segment_mode = clock.settings.font_index == SEGMENT_FONT_INDEX;
+    // 打勾的是「实际生效」的字体：自动模式下就是挑中的第一个可用字体，
+    // 指定字体在别的机器上缺失回落时，勾也会落在回落后的那个上。
+    // 七段数码是内置绘制的特殊项，勾直接看它自己的下标。
+    let current = if segment_mode {
+        None
+    } else {
+        render::effective_font_index(clock.settings.font_index)
+    };
+    unsafe {
+        let menu = CreatePopupMenu().ok()?;
+
+        for (i, &name) in FONT_CHOICES.iter().enumerate() {
+            let label = to_wide(name);
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING | if Some(i) == current { MF_CHECKED } else { MF_UNCHECKED },
+                MENU_FONT_BASE + i,
+                PCWSTR(label.as_ptr()),
+            );
+        }
+
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let label = to_wide(SEGMENT_FONT_NAME);
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING | if segment_mode { MF_CHECKED } else { MF_UNCHECKED },
+            MENU_FONT_BASE + SEGMENT_FONT_INDEX as usize,
+            PCWSTR(label.as_ptr()),
+        );
+        Some(menu)
+    }
+}
+
 fn choose_custom_color(clock: &mut Clock) {
     let current = clock.settings.color;
     unsafe {
@@ -112,6 +149,11 @@ fn handle_command(clock: &mut Clock, command: usize) {
         clock.set_size_index((command - MENU_SIZE_BASE) as i32);
         return;
     }
+    // 真字体 + 末尾的内置七段数码（SEGMENT_FONT_INDEX 正好接在真字体后面）
+    if (MENU_FONT_BASE..=MENU_FONT_BASE + SEGMENT_FONT_INDEX as usize).contains(&command) {
+        clock.set_font_index((command - MENU_FONT_BASE) as i32);
+        return;
+    }
 
     match command {
         MENU_COLOR_CUSTOM => choose_custom_color(clock),
@@ -128,19 +170,23 @@ pub fn show(clock: &mut Clock) {
         let root = CreatePopupMenu();
         let colors = build_color_menu(clock);
         let sizes = build_size_menu(clock);
+        let fonts = build_font_menu(clock);
 
-        let (Ok(root), Some(colors), Some(sizes)) = (root, colors, sizes) else {
+        let (Ok(root), Some(colors), Some(sizes), Some(fonts)) = (root, colors, sizes, fonts)
+        else {
             return; // 建不出来就算了：这次右键当作没点
         };
 
         let label_color = to_wide("颜色");
         let label_size = to_wide("字号");
+        let label_font = to_wide("字体");
         let label_outline = to_wide("描边");
         let label_topmost = to_wide("置顶");
         let label_quit = to_wide("关闭");
 
         let _ = AppendMenuW(root, MF_POPUP, colors.0 as usize, PCWSTR(label_color.as_ptr()));
         let _ = AppendMenuW(root, MF_POPUP, sizes.0 as usize, PCWSTR(label_size.as_ptr()));
+        let _ = AppendMenuW(root, MF_POPUP, fonts.0 as usize, PCWSTR(label_font.as_ptr()));
         let _ = AppendMenuW(root, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(
             root,

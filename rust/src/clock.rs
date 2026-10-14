@@ -34,7 +34,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::config::{
-    DRAG_THRESHOLD, OUTLINE_DIVISOR, PAD_MIN, POS_UNSET, SIZE_STEPS, START_TOP_RATIO, TICK_MS,
+    DRAG_THRESHOLD, OUTLINE_DIVISOR, PAD_MIN, POS_UNSET, SEGMENT_FONT_INDEX, SIZE_STEPS,
+    START_TOP_RATIO, TICK_MS,
 };
 use crate::menu;
 use crate::render::{self, Font, TEXT_RECT_SIZE};
@@ -148,6 +149,11 @@ impl Clock {
         }
     }
 
+    /// 内置七段数码模式：不用 GDI+ 字体，render_segments 直接画多边形。
+    fn segment_mode(&self) -> bool {
+        self.settings.font_index == SEGMENT_FONT_INDEX
+    }
+
     /// 亮字配黑描边、暗字配白描边，压在任何壁纸上都读得清。
     fn outline_color(&self) -> u32 {
         if util::color_is_light(self.settings.color) {
@@ -166,8 +172,6 @@ impl Clock {
     /// 上面紧、下面松，一眼就看出是歪的；而且它量出来的框还比字本身大一圈。
     /// 所以这里改成真画一次，再扫 alpha 找出墨迹的真实范围（描边也算在内），拿它反推。
     fn measure_layout(&mut self) -> Option<(i32, i32, f32, f32)> {
-        let font = self.font.as_ref()?;
-
         // 墨迹四周留白：描边半径 + 一点呼吸空间，别让描边贴着窗口边被切掉
         let mut pad = self.outline + (self.font_px / 32.0) as i32;
         if pad < self.outline + PAD_MIN {
@@ -189,16 +193,29 @@ impl Clock {
         let origin_y = probe_h as f32 / 2.0 - TEXT_RECT_SIZE / 2.0;
 
         self.surface.clear();
-        render::render_text(
-            self.surface.graphics,
-            &util::to_wide(PROBE_TEXT),
-            font,
-            origin_x,
-            origin_y,
-            self.settings.color,
-            self.outline_color(),
-            self.outline,
-        );
+        if self.segment_mode() {
+            render::render_segments(
+                self.surface.graphics,
+                &util::to_wide(PROBE_TEXT),
+                origin_x,
+                origin_y,
+                self.font_px,
+                self.settings.color,
+                self.outline_color(),
+                self.outline,
+            );
+        } else {
+            render::render_text(
+                self.surface.graphics,
+                &util::to_wide(PROBE_TEXT),
+                self.font.as_ref()?,
+                origin_x,
+                origin_y,
+                self.settings.color,
+                self.outline_color(),
+                self.outline,
+            );
+        }
         self.surface.flush();
         let ink = render::ink_bounds(self.surface.bits, probe_w, probe_h)?;
 
@@ -227,8 +244,13 @@ impl Clock {
             self.outline = 0;
         }
 
-        self.font = Font::create(self.font_px);
-        if self.font.is_none() {
+        // 七段数码模式不用字体；真字体模式建不出字体就没法画，算重排失败
+        self.font = if self.segment_mode() {
+            None
+        } else {
+            Font::create(self.font_px, self.settings.font_index)
+        };
+        if !self.segment_mode() && self.font.is_none() {
             return false;
         }
 
@@ -284,7 +306,7 @@ impl Clock {
     // ---------------------------------------------------------------- 绘制
 
     fn render(&mut self) {
-        if self.hwnd.is_invalid() || self.font.is_none() {
+        if self.hwnd.is_invalid() || (!self.segment_mode() && self.font.is_none()) {
             return;
         }
         if !self.surface.ensure(self.win_w, self.win_h) {
@@ -305,16 +327,30 @@ impl Clock {
             let _ = GdipSetTextRenderingHint(graphics, TextRenderingHintAntiAlias);
         }
 
-        render::render_text(
-            graphics,
-            &util::to_wide(&self.time_text.clone()),
-            self.font.as_ref().unwrap(),
-            self.rect_x,
-            self.rect_y,
-            self.settings.color,
-            self.outline_color(),
-            self.outline,
-        );
+        let time_text = self.time_text.clone();
+        if self.segment_mode() {
+            render::render_segments(
+                graphics,
+                &util::to_wide(&time_text),
+                self.rect_x,
+                self.rect_y,
+                self.font_px,
+                self.settings.color,
+                self.outline_color(),
+                self.outline,
+            );
+        } else {
+            render::render_text(
+                graphics,
+                &util::to_wide(&time_text),
+                self.font.as_ref().unwrap(),
+                self.rect_x,
+                self.rect_y,
+                self.settings.color,
+                self.outline_color(),
+                self.outline,
+            );
+        }
 
         self.surface.flush();
         self.surface.present(self.hwnd);
@@ -525,6 +561,18 @@ impl Clock {
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
+        }
+        settings::save(&self.settings);
+    }
+
+    pub fn set_font_index(&mut self, index: i32) {
+        if index == self.settings.font_index {
+            return;
+        }
+        self.settings.font_index = index;
+        // 换了字体，墨迹范围跟着变，得整套重排一遍
+        if self.relayout(true) {
+            self.render();
         }
         settings::save(&self.settings);
     }

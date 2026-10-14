@@ -75,7 +75,7 @@ fn show_help() {
          操作\n\
          \x20 左键拖动    移动时钟（只有文字本身点得中，透明处鼠标会穿过去）\n\
          \x20 鼠标滚轮    调字号\n\
-         \x20 右键        菜单：颜色 / 字号 / 描边 / 置顶 / 关闭\n\
+         \x20 右键        菜单：颜色 / 字号 / 字体 / 描边 / 置顶 / 关闭\n\
          \x20 Esc         关闭\n\
          \n\
          设置自动存在 exe 同目录的 clock.ini 里。",
@@ -130,7 +130,7 @@ fn main() {
 
         let exit_code = {
             // 这个作用域很关键：所有 GDI+ 对象都得在 GdiplusShutdown 之前析构干净。
-            if render::family().is_none() {
+            if render::resolve_family(-1).is_none() {
                 show_error(
                     "系统里找不到任何能用的字体（Consolas、微软雅黑、Segoe UI 都没有），没法画时间。",
                 );

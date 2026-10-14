@@ -13,8 +13,8 @@ use windows::Win32::System::WindowsProgramming::{
 };
 
 use crate::config::{
-    DEFAULT_COLOR, DEFAULT_OUTLINE, DEFAULT_SIZE_INDEX, DEFAULT_TOPMOST, INI_NAME, INI_SECTION,
-    POS_UNSET, SIZE_STEPS,
+    DEFAULT_COLOR, DEFAULT_FONT_INDEX, DEFAULT_OUTLINE, DEFAULT_SIZE_INDEX, DEFAULT_TOPMOST,
+    INI_NAME, INI_SECTION, POS_UNSET, SEGMENT_FONT_INDEX, SIZE_STEPS,
 };
 use crate::util::{clamp_int, to_wide};
 
@@ -25,6 +25,7 @@ pub struct Settings {
     pub y: i32,
     pub topmost: bool,
     pub outline: bool,
+    pub font_index: i32, // -1 = 自动（挑第一个装了的）
 }
 
 impl Settings {
@@ -36,6 +37,7 @@ impl Settings {
             y: POS_UNSET,
             topmost: DEFAULT_TOPMOST,
             outline: DEFAULT_OUTLINE,
+            font_index: DEFAULT_FONT_INDEX,
         }
     }
 }
@@ -127,6 +129,14 @@ pub fn load() -> Settings {
     settings.y = ini_int(&path, "y", POS_UNSET);
     settings.topmost = ini_int(&path, "topmost", DEFAULT_TOPMOST as i32) != 0;
     settings.outline = ini_int(&path, "outline", DEFAULT_OUTLINE as i32) != 0;
+    // 字体下标：-1 = 自动；0..=SEGMENT_FONT_INDEX 是合法档（含内置七段数码）；
+    // 越界（比如 ini 是别的版本写的）按自动处理
+    let font_index = ini_int(&path, "font", DEFAULT_FONT_INDEX);
+    settings.font_index = if font_index >= 0 && font_index <= SEGMENT_FONT_INDEX {
+        font_index
+    } else {
+        DEFAULT_FONT_INDEX
+    };
 
     let mut color = ini_hex(&path, "color", DEFAULT_COLOR);
     if (color >> 24) == 0 {
@@ -159,6 +169,7 @@ pub fn save(settings: &Settings) {
     ini_write(&path, "y", &settings.y.to_string());
     ini_write(&path, "topmost", if settings.topmost { "1" } else { "0" });
     ini_write(&path, "outline", if settings.outline { "1" } else { "0" });
+    ini_write(&path, "font", &settings.font_index.to_string());
 }
 
 pub fn reset() {
